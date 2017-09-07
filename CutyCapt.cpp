@@ -19,12 +19,19 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 //
-// $Id$
+// $Id: CutyCapt.cpp 10 2013-07-14 21:57:37Z hoehrmann $
 //
 ////////////////////////////////////////////////////////////////////
 
 #include <QApplication>
 #include <QtWebKit>
+#include <QNetworkReply>
+#include <QSslError>
+
+#if QT_VERSION >= 0x050000
+#include <QtWebKitWidgets>`
+#endif
+
 #include <QtGui>
 #include <QSvgGenerator>
 
@@ -37,6 +44,8 @@
 #include <QNetworkRequest>
 #include <QNetworkProxy>
 #include "CutyCapt.hpp"
+#include <fstream>
+#include "CookieJar.hpp"
 
 #if QT_VERSION >= 0x040600 && 0
 #define CUTYCAPT_SCRIPT 1
@@ -159,10 +168,9 @@ CutyPage::setAttribute(QWebSettings::WebAttribute option,
 }
 
 // TODO: Consider merging some of main() and CutyCap
-
 CutyCapt::CutyCapt(CutyPage* page, const QString& output, int delay, OutputFormat format,
-                   const QString& scriptProp, const QString& scriptCode, bool insecure,
-                   bool smooth) {
+                   const QString& scriptProp, const QString& scriptCode, const QString& cookieJarPath,bool insecure, bool smooth,
+QPrinter::Orientation orientation, QPrinter::PaperSize paperSize) {
   mPage = page;
   mOutput = output;
   mDelay = delay;
@@ -173,12 +181,22 @@ CutyCapt::CutyCapt(CutyPage* page, const QString& output, int delay, OutputForma
   mFormat = format;
   mScriptProp = scriptProp;
   mScriptCode = scriptCode;
+  mCookieJarPath = cookieJarPath;
   mScriptObj = new QObject();
+  mOrientation = orientation;
+  mPaperSize = paperSize;
+  printf("orientation=%d, paper size=%d\n", orientation, paperSize);
 
   // This is not really nice, but some restructuring work is
   // needed anyway, so this should not be that bad for now.
   mPage->setCutyCapt(this);
 }
+
+CutyCapt::~CutyCapt() {
+    delete mScriptObj;
+}
+
+
 
 void
 CutyCapt::InitialLayoutCompleted() {
@@ -186,6 +204,16 @@ CutyCapt::InitialLayoutCompleted() {
 
   if (mSawInitialLayout && mSawDocumentComplete)
     TryDelayedRender();
+
+	if(!mCookieJarPath.isEmpty()) {
+      CookieJar* cookieJar = static_cast<CookieJar*>(mPage->networkAccessManager()->cookieJar());
+      bool success = cookieJar->serialize(mCookieJarPath);
+
+      if(!success) {
+          fprintf(stderr, "fatal: unable to serialize cookies to cookie jar path\n");
+          exit(1);
+      }
+  }
 }
 
 void
@@ -283,7 +311,8 @@ CutyCapt::saveSnapshot() {
     case PdfFormat:
     case PsFormat: {
       QPrinter printer;
-      printer.setPageSize(QPrinter::A4);
+      printer.setPageSize(mPaperSize);
+      printer.setOrientation(mOrientation);
       printer.setOutputFileName(mOutput);
       // TODO: change quality here?
       mainFrame->print(&printer);
@@ -360,7 +389,12 @@ CaptHelp(void) {
     "  --private-browsing=<on|off>    Private browsing (default: unknown)          \n"
     "  --auto-load-images=<on|off>    Automatic image loading (default: on)        \n"
     "  --js-can-open-windows=<on|off> Script can open windows? (default: unknown)  \n"
+    "  --orientation=<landscape|portrait> Page orientation (default: portrait)     \n"
+    "  --page-size=<A3|A4|Letter|Tabloid> Page size (default: A4)                  \n"
     "  --js-can-access-clipboard=<on|off> Script clipboard privs (default: unknown)\n"
+    "  --cookie-jar=<path>            The path to the cookie jar to use when making\n"
+    "                                 requests. Cookies will be read from this file\n"
+    "                                 and saved back to it after the request.      \n"
 #if QT_VERSION >= 0x040500
     "  --print-backgrounds=<on|off>   Backgrounds in PDF/PS output (default: off)  \n"
     "  --zoom-factor=<float>          Page zoom factor (default: no zooming)       \n"
@@ -427,6 +461,10 @@ main(int argc, char *argv[]) {
   QByteArray body;
   QNetworkRequest req;
   QNetworkAccessManager manager;
+  QString cookieJarPath = "";
+  CookieJar cookieJar;
+  QPrinter::Orientation orientation = QPrinter::Portrait;
+  QPrinter::PaperSize paperSize = QPrinter::A4;
 
   // Parse command line parameters
   for (int ax = 1; ax < argc; ++ax) {
@@ -460,10 +498,10 @@ main(int argc, char *argv[]) {
 
 #if CUTYCAPT_SCRIPT
     } else if (strcmp("--debug-print-alerts", s) == 0) {
-      page.setPrintAlerts(true);
+	  page.setPrintAlerts(true);
       continue;
 #endif
-    } 
+    }
 
     value = strchr(s, '=');
 
@@ -502,7 +540,6 @@ main(int argc, char *argv[]) {
         for (int ix = 0; CutyExtMap[ix].id != CutyCapt::OtherFormat; ++ix)
           if (argOut.endsWith(CutyExtMap[ix].extension))
             format = CutyExtMap[ix].id; //, break;
-
     } else if (strncmp("--user-styles", s, nlen) == 0) {
       // This option is provided for backwards-compatibility only
       argUserStyle = value;
@@ -542,6 +579,43 @@ main(int argc, char *argv[]) {
 
     } else if (strncmp("--links-included-in-focus-chain", s, nlen) == 0) {
       page.setAttribute(QWebSettings::LinksIncludedInFocusChain, value);
+
+    } else if (strncmp("--orientation", s, nlen) == 0) {
+      if (strcasecmp(value, "landscape") == 0) {
+        orientation = QPrinter::Landscape;
+     } else if (strcasecmp(value, "portrait") == 0) {
+        orientation = QPrinter::Portrait;
+      } else {
+        argHelp = 1;
+        break;
+      }
+    } else if (strncmp("--paper-size", s, nlen) == 0) {
+      if (strcasecmp(value, "A4") == 0) {
+        paperSize = QPrinter::A4;
+      } else if (strcasecmp(value, "A3") == 0) {
+        paperSize = QPrinter::A3;
+      } else if (strcasecmp(value, "Letter") == 0) {
+        paperSize = QPrinter::Letter;
+      } else if (strcasecmp(value, "Legal") == 0) {
+        paperSize = QPrinter::Legal;
+      } else if (strcasecmp(value, "Tabloid") == 0) {
+        paperSize = QPrinter::Tabloid;
+      } else {
+        argHelp = 1;
+        break;
+      }
+	}
+	else if (strncmp("--cookie-jar", s, nlen) == 0) {
+        cookieJarPath = value;
+        bool success = cookieJar.deserialize(cookieJarPath);
+
+        if(!success) {
+            fprintf(stderr, "fatal: unable to deserialize cookies from cookie jar path\n");
+            exit(1);
+        }
+
+        manager.setCookieJar(&cookieJar);
+        page.setNetworkAccessManager(&manager);
 
 #if QT_VERSION >= 0x040500
     } else if (strncmp("--print-backgrounds", s, nlen) == 0) {
@@ -618,7 +692,7 @@ main(int argc, char *argv[]) {
         method = QNetworkAccessManager::PostOperation;
       else if (strcmp("value", "head") == 0)
         method = QNetworkAccessManager::HeadOperation;
-      else 
+      else
         (void)0; // TODO: ...
 
     } else {
@@ -650,8 +724,8 @@ main(int argc, char *argv[]) {
     }
   }
 
-  CutyCapt main(&page, argOut, argDelay, format, scriptProp, scriptCode,
-                !!argInsecure, !!argSmooth);
+  CutyCapt main(&page, argOut, argDelay, format, scriptProp, scriptCode, cookieJarPath,!!argInsecure, !!argSmooth,orientation,paperSize);
+
 
   app.connect(&page,
     SIGNAL(loadFinished(bool)),
@@ -715,5 +789,6 @@ main(int argc, char *argv[]) {
   else
     page.mainFrame()->load(req, method);
 
-  return app.exec();
+  int status = app.exec();
+  return status;
 }

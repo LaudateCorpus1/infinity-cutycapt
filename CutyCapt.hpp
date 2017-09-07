@@ -1,3 +1,4 @@
+#include <QPrinter>
 #include <QtWebKit>
 
 #if QT_VERSION >= 0x050000
@@ -39,14 +40,19 @@ public:
     RenderTreeFormat, PngFormat, JpegFormat, MngFormat, TiffFormat, GifFormat,
     BmpFormat, PpmFormat, XbmFormat, XpmFormat, OtherFormat };
 
-  CutyCapt(CutyPage* page,
-           const QString& output,
-           int delay,
-           OutputFormat format,
-           const QString& scriptProp,
+CutyCapt(CutyPage* page,
+            const QString& output,
+            int delay,
+            OutputFormat format,
+            const QString& scriptProp,
            const QString& scriptCode,
+           const QString& cookieJarPath,
            bool insecure,
-           bool smooth);
+           bool smooth,
+           QPrinter::Orientation orientation,
+           QPrinter::PaperSize paperSize);
+
+  ~CutyCapt();
 
 private slots:
   void DocumentComplete(bool ok);
@@ -70,6 +76,9 @@ protected:
   QObject*     mScriptObj;
   QString      mScriptProp;
   QString      mScriptCode;
+  QString      mCookieJarPath;
   bool         mInsecure;
   bool         mSmooth;
+  QPrinter::Orientation mOrientation;
+  QPrinter::PaperSize mPaperSize;
 };
